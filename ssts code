@@ -1,0 +1,534 @@
+import torch
+import torchvision
+import torchvision.transforms as transforms
+from torch.autograd import Variable, grad
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import random
+from argparse import ArgumentParser
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+import copy
+import os
+torch.manual_seed(0)
+ # copy 库实现数据的复制和保护
+parser = ArgumentParser(description='SVGR')
+name = 'SVGR'
+
+parser.add_argument('--model_dir', type=str, default='model', help='trained or pre-trained model directory')
+args = parser.parse_args()
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+transform = transforms.Compose(
+	[transforms.ToTensor(),
+	transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])  #这就相当于一个函数的嵌套，例如把f和g组合起来就是f(g(x)).x是g的参数,执行的结果作为f的参数再执行,最后的结果就是组合函数的结果.这里就是把规则化的数据集传给ToTensor函数
+
+#trainset = torchvision.datasets.CIFAR100(root='./data', train=True,
+#										download=True, transform=transform)
+#trainloader = torch.utils.data.DataLoader(trainset, batch_size=4,
+#											shuffle=True, num_workers=0)
+
+#testset = torchvision.datasets.CIFAR100(root='./data', train=False,
+#										download=True, transform=transform)
+#testloader = torch.utils.data.DataLoader(testset, batch_size=4,
+#										shuffle=False, num_workers=0)
+
+#classes = ('plane', 'car', 'bird', 'cat',
+#			'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+batch_size = 10
+train_data = torchvision.datasets.FashionMNIST(root = './data', train = True, download = True, transform = transforms.ToTensor())
+test_data = torchvision.datasets.FashionMNIST(root = './data', train = False, download = True, transform = transforms.ToTensor())
+# 创建加载器
+trainloader = torch.utils.data.DataLoader(train_data, batch_size = batch_size, num_workers = 0)
+testloader = torch.utils.data.DataLoader(test_data, batch_size = batch_size, num_workers = 0)
+
+def imshow(img):
+    img = img / 2 + 0.5     # unnormalize
+    npimg = img.numpy()
+    plt.imshow(np.transpose(npimg, (1, 2, 0)))
+
+
+# get some random training images
+#dataiter = iter(trainloader)
+#images, labels = dataiter.__next__()
+
+# show images
+#imshow(torchvision.utils.make_grid(images))
+# print labels
+#print(' '.join('%5s' % classes[labels[j]] for j in range(4)))
+#plt.show()
+
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        # 五个卷积层
+        self.conv1 = nn.Sequential(  # 输入 32 * 32 * 3
+            nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1),  # (32-3+2)/1+1 = 32
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0)  # (32-2)/2+1 = 16
+        )
+        self.conv2 = nn.Sequential(  # 输入 16 * 16 * 64
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),  # (16-3+2)/1+1 = 16
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0)  # (16-2)/2+1 = 8
+        )
+        self.conv3 = nn.Sequential(  # 输入 8 * 8 * 128
+            nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, stride=1, padding=1),  # (8-3+2)/1+1 = 8
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0)  # (8-2)/2+1 = 4
+        )
+        self.conv4 = nn.Sequential(  # 输入 4 * 4 * 256
+            nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=1, padding=1),  # (4-3+2)/1+1 = 4
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0)  # (4-2)/2+1 = 2
+        )
+        self.conv5 = nn.Sequential(  # 输入 2 * 2 * 512
+            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=3, stride=1, padding=1),  # (2-3+2)/1+1 = 2
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0)  # (2-2)/2+1 = 1
+        )  
+        self.dense = nn.Sequential(
+            nn.Linear(512, 100),
+            #nn.ReLU(),
+            #nn.LogSoftmax(dim=1)
+            nn.Softmax()
+            #nn.Linear(120, 84),
+            #nn.ReLU(),
+            #nn.Linear(84, 10)
+        )
+
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        x = x.view(-1, 512) #（-1，512）表示根据参数调整维数
+        x = self.dense(x)
+        return x
+
+class MLP(nn.Module):  
+    def __init__(self):
+        super(MLP, self).__init__() 
+        self.fc1 = torch.nn.Linear(784, 1048)  
+        self.fc2 = torch.nn.Linear(1048, 1024)
+        self.fc3 = torch.nn.Linear(1024, 512)
+        self.fc4 = torch.nn.Linear(512, 256)  
+        self.fc5 = torch.nn.Linear(256, 10)  
+
+        #self.fc1 = torch.nn.Linear(784, 1048*2)  
+        #self.fc2 = torch.nn.Linear(1048*2, 1024*2)
+        #self.fc3 = torch.nn.Linear(1024*2, 512*2)
+        #self.fc4 = torch.nn.Linear(512*2, 256*2)  
+        #self.fc5 = torch.nn.Linear(256*2, 10)  
+
+    def forward(self, din):
+      
+        din = din.view(-1, 28 * 28)  
+        dout = F.relu(self.fc1(din))  
+        dout = F.relu(self.fc2(dout))
+        dout = F.relu(self.fc3(dout))
+        dout = F.relu(self.fc4(dout))
+        #dout = F.softmax(self.fc5(dout), dim=1) 
+        dout = F.log_softmax(self.fc5(dout), dim=1) 
+        return dout
+
+
+class SVGR(MLP):
+    def __init__(self):
+        super(SVGR,self).__init__()
+
+    def partial_grad(self,data, target, loss_function):
+        outputs = self.forward(data)
+        loss = loss_function(outputs, target)
+        loss.backward()  # compute grad
+        return loss
+
+    def get_loss(self,datasets,loss_function,n_samples):
+        x_test = copy.deepcopy(self)  # deepcopy是深拷贝，原来的数据改变不影响拷贝后的数据
+        total_loss = 0.0
+        for i_grad, data_grad in enumerate(datasets):
+            inputs, labels = data_grad
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+            outputs = x_test.forward(inputs)
+            loss = loss_function(outputs, labels)
+            total_loss += (1. / n_samples) *loss
+        return total_loss
+
+    def calculate_loss_grad(self, dataset, loss_function, n_samples):
+        total_loss = 0.0
+        full_grad = 0.0
+        for i_grad, data_grad in enumerate(dataset):
+            inputs, labels = data_grad
+            inputs = inputs.to(device)
+            labels = labels.to(device)
+           # inputs, labels = Variable(inputs), Variable(labels)  # wrap data and target into variable
+            total_loss += (1. / n_samples) * self.partial_grad(inputs, labels, loss_function)
+
+        for para in self.parameters():
+            full_grad += para.grad.data.norm(2) ** 2
+        total_loss_return = total_loss.data.cpu().numpy()
+        grad_return = (1. / n_samples) * np.sqrt(full_grad.cpu().numpy())
+
+        return total_loss_return, grad_return
+
+    def accuracy(self,datasets):
+        x_test = copy.deepcopy(self)
+        correct = 0
+        total = 0
+        with torch.no_grad():  # 训练集中不需要反向传播
+            for data in datasets:
+                images, labels = data
+                images, labels = images.to(device), labels.to(device)  # 将输入和目标在每一步都送入GPU
+                outputs = x_test.forward(images)
+                _, predicted = torch.max(outputs.data, 1)  # 返回每一行中最大值的那个元素，且返回其索引。即：区输出向量最大绝对值的标号
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+        print('Accuracy of the network on images: %d %%' % (100 * correct / total))
+        return 100.0 * correct / total
+
+    def svrg_backward(self, traindata,testdata,loss_function, n_epoch, n_samples, rate_c,shrinkage):
+        it_total = 0.0
+        for epoch in range(n_epoch):
+            running_loss = 0.0
+
+            for i_data, data in enumerate(traindata):
+                if i_data % n_samples == 0:
+                    previous_net_sgd = copy.deepcopy(self)  # update previous_net_sgd
+                    previous_net_grad = copy.deepcopy(self)  # update previous_net_grad
+                    previous_net_grad.zero_grad()  # grad = 0
+                    total_loss_epoch, grad_norm_epoch = previous_net_grad.calculate_loss_grad(traindata,loss_function,n_samples)
+                    print('total loss of the network on images: %.3f' % (total_loss_epoch))
+
+                inputs, labels = data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                #inputs, labels = Variable(inputs), Variable(labels)  # wrap data and target into variable
+
+                # Compute prev stoc grad
+                previous_net_sgd.zero_grad()  # grad = 0
+                prev_loss = previous_net_sgd.partial_grad(inputs, labels, loss_function)
+
+                # Compute cur stoc grad
+                self.zero_grad()  # grad = 0
+                cur_loss = self.partial_grad(inputs, labels, loss_function)
+
+                # Backward
+                for param1, param2, param3 in zip(self.parameters(), previous_net_sgd.parameters(),
+                                                  previous_net_grad.parameters()):
+                    param1.data -= (rate_c) * (
+                            param1.grad.data - param2.grad.data + (1. / n_samples) * param3.grad.data)
+
+                # print statistics
+                running_loss += cur_loss.data
+                if i_data % 2500 == 2499:  # print every 2500 mini-batches
+                    print('[%d, %5d] loss: %.3f' %
+                          (epoch + 1, i_data + 1, running_loss / 2500))
+                    running_loss = 0.0
+
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on training set:')
+                    acc_rate = self.accuracy(traindata)
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on testing set:')
+                    acc_rate = self.accuracy(testdata)
+
+                it_total += 1
+            rate_c = rate_c / shrinkage
+
+        return running_loss
+
+    def sgd_backward(self, traindata, testdata, loss_function, n_epoch, n_samples, rate_c, shrinkage):
+        it_total = 0.0
+        for epoch in range(n_epoch):
+
+            running_loss = 0.0
+            for i_data, data in enumerate(traindata):
+                js = i_data % n_samples
+
+                if js == 0:
+                    temp = copy.deepcopy(self)
+                    temp.zero_grad()
+                    total_loss_epoch, grad_norm_epoch = temp.calculate_loss_grad(traindata,loss_function,n_samples)
+                    print('total loss of the network on images: %.3f' % (total_loss_epoch))
+                
+                inputs, labels = data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                # inputs, labels = Variable(inputs), Variable(labels)  # wrap data and target into variable
+
+                # Compute prev stoc grad
+                self.zero_grad()  # grad = 0
+                cur_loss = self.partial_grad(inputs, labels, loss_function)
+
+                for param1, param_temp in zip(self.parameters(), temp.parameters()):
+                    param1.data -= (rate_c) * param1.grad.data
+
+                    param_temp.data = (1-1/(js+1))*param_temp.data+1/(js+1)*param1.data
+                    if js == n_samples-1:
+                       param1.data = param_temp.data
+      
+                running_loss += cur_loss.data
+                if i_data % 2500 == 2499:  # print every 2500 mini-batches
+                    print('[%d, %5d] loss: %.3f' %
+                          (epoch + 1, i_data + 1, running_loss / 2500))
+                    running_loss = 0.0
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on training set:')
+                    acc_rate = self.accuracy(traindata)
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on testing set:')
+                    acc_rate = self.accuracy(testdata)
+
+                it_total += 1
+
+            rate_c = rate_c / shrinkage
+
+                # print statistics
+        return running_loss
+
+    def rsag_backward(self, traindata,testdata,loss_function, n_epoch, n_samples, rate_c, shrinkage):
+        it_total = 0.0
+        for epoch in range(n_epoch):
+            running_loss = 0.0
+
+            for it_inner, data in enumerate(traindata):
+                js = it_inner % n_samples
+                if js == 0:
+                    x_md = copy.deepcopy(self)
+                    x_ag = copy.deepcopy(self)
+                    total_loss_epoch, grad_norm_epoch = self.calculate_loss_grad(traindata,loss_function,n_samples)
+                    print('total loss of the network on images: %.3f' % (total_loss_epoch))
+
+                inputs, labels = data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                for param1, param2, param3 in zip(self.parameters(), x_md.parameters(), x_ag.parameters()):
+                    param2.data = js / (js + 2) * param3.data + 2 / (js + 2) * param1.data
+
+                # Compute cur stoc grad
+                x_md.zero_grad()  # grad = 0
+                cur_loss = x_md.partial_grad(inputs, labels, loss_function)
+
+                for param1, param2, param3 in zip(self.parameters(), x_md.parameters(), x_ag.parameters()):
+                    param1.data -= (2*(js+1)+3) / (2*(js + 2))*rate_c * param2.grad.data
+                    param3.data = param2.data - rate_c * param2.grad.data
+                    if js == n_samples-1:
+                        param1.data = param2.data
+
+                running_loss += cur_loss.data 
+
+                if it_inner % 2500 == 2499:  # print every 2500 mini-batches
+                    print('[%d, %5d] loss: %.3f' %
+                          (epoch + 1, it_inner + 1, running_loss / 2500))
+                    running_loss = 0.0
+
+
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on training set:')
+                    acc_rate = self.accuracy(traindata)
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on testing set:')
+                    acc_rate = self.accuracy(testdata)
+
+                it_total += 1
+
+                #    total_loss = self.get_loss(dataset,loss_function,n_samples)
+                #    print('iteration: %5d loss: %.3f' %
+                #          (it_total, total_loss.data ))
+            rate_c = rate_c/shrinkage
+
+        return running_loss
+
+
+    def vrsgd_backward(self, traindata,testdata,loss_function, n_epoch, n_samples, rate_c,shrinkage):
+        it_total = 0
+        if it_total == 0:
+            x_bar = copy.deepcopy(self)
+        for epoch in range(n_epoch):
+            running_loss = 0.0
+
+            for i_data, data in enumerate(traindata):
+                js = i_data % n_samples
+
+                if js == 0:
+                    temp = copy.deepcopy(self)
+                    previous_net_sgd = copy.deepcopy(x_bar)  # update previous_net_sgd
+                    previous_net_grad = copy.deepcopy(x_bar)  # update previous_net_grad
+                    previous_net_grad.zero_grad()  # grad = 0
+                    temp.zero_grad()
+                    _, grad_norm_epoch = previous_net_grad.calculate_loss_grad(traindata,loss_function,n_samples)
+                    total_loss_epoch, grad_norm_epoch = temp.calculate_loss_grad(traindata,loss_function,n_samples)
+                    print('total loss of the network on images: %.3f' % (total_loss_epoch))
+
+                inputs, labels = data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                #inputs, labels = Variable(inputs), Variable(labels)  # wrap data and target into variable
+
+                # Compute prev stoc grad
+                previous_net_sgd.zero_grad()  # grad = 0
+                prev_loss = previous_net_sgd.partial_grad(inputs, labels, loss_function)
+
+                # Compute cur stoc grad
+                self.zero_grad()  # grad = 0
+                cur_loss = self.partial_grad(inputs, labels, loss_function)
+
+                # Backward
+                for param1, param2, param3, paramx_bar, param_temp in zip(self.parameters(), previous_net_sgd.parameters(),
+                                                  previous_net_grad.parameters(),x_bar.parameters(),temp.parameters()):
+                    param1.data -= (rate_c) * (
+                            param1.grad.data - param2.grad.data + (1. / n_samples) * param3.grad.data)
+                    
+                    param_temp.data = (1-1/(js+1))*param_temp.data+1/(js+1)*param1.data
+                    
+                    if js == n_samples-1:
+                        paramx_bar.data = param_temp.data
+                
+
+                running_loss += cur_loss.data
+                if i_data % 2500 == 2499:  # print every 2500 mini-batches
+                    print('[%d, %5d] loss: %.3f' %
+                          (epoch + 1, i_data + 1, running_loss / 2500))
+                    running_loss = 0.0
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on training set:')
+                    acc_rate = self.accuracy(traindata)
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on testing set:')
+                    acc_rate = self.accuracy(testdata)
+
+                it_total += 1
+
+        return running_loss
+
+
+    def katyusha_backward(self, traindata,testdata,loss_function, n_epoch, n_samples, rate_c,shrinkage):
+        tau2 = 0.5
+        L = 10
+        sigma = 1e-1
+        tau1 = np.array([np.sqrt(n_samples*sigma)/np.sqrt(3*L),0.5]).min()
+        alpha = 1/(3*tau1*L)
+        it_total = 0
+
+
+        for epoch in range(n_epoch):
+            running_loss = 0.0
+            if it_total == 0:
+                y_bar = copy.deepcopy(self)
+                y = copy.deepcopy(self)
+                z = copy.deepcopy(self)
+
+            for i_data, data in enumerate(traindata):
+
+
+                js = i_data % n_samples
+                if js == 0:
+                    previous_net_sgd = copy.deepcopy(self)  # update previous_net_sgd
+                    previous_net_grad = copy.deepcopy(self)  # update previous_net_grad
+                    previous_net_grad.zero_grad()  # grad = 0
+                    total_loss_epoch, grad_norm_epoch = previous_net_grad.calculate_loss_grad(traindata, loss_function,
+                                                                                              n_samples)
+                    sum_y = 0
+
+                    print('total loss of the network on images: %.3f' % (total_loss_epoch))
+
+                inputs, labels = data
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                # inputs, labels = Variable(inputs), Variable(labels)  # wrap data and target into variable
+
+
+
+                # Compute prev stoc grad
+                previous_net_sgd.zero_grad()  # grad = 0
+                prev_loss = previous_net_sgd.partial_grad(inputs, labels, loss_function)
+
+                # Compute cur stoc grad
+                self.zero_grad()  # grad = 0
+                cur_loss = self.partial_grad(inputs, labels, loss_function)
+
+                # Backward
+                for param1, param2, param3, paramz, paramy, paramy_bar in zip(self.parameters(), previous_net_sgd.parameters(),
+                                                  previous_net_grad.parameters(),z.parameters(),y.parameters(),y_bar.parameters()):
+
+
+                    #param1.data = tau1*z + tau2*param2.data + (1-tau1-tau2)*y
+                    param1.data = tau1 * paramz.data + tau2*param2.data +  (1 - tau1 - tau2) * paramy.data
+
+                    paramz.data -= alpha*(param1.grad.data - param2.grad.data + (1. / n_samples) * param3.grad.data)
+                    paramy.data = param1.data - 1/(3*L)*(param1.grad.data - param2.grad.data + (1. / n_samples) * param3.grad.data)
+
+
+                    paramy_bar.data += (1+alpha*sigma)**(js+1)*paramy.data
+                    sum_y += (1 + alpha * sigma)**(js+1)
+
+                if js == n_samples - 1:
+                    param1.data = paramy_bar.data/sum_y
+
+                running_loss += cur_loss.data
+                if i_data % 2500 == 2499:  # print every 2500 mini-batches
+                    print('[%d, %5d] loss: %.3f' %
+                          (epoch + 1, i_data + 1, running_loss / 2500))
+                    running_loss = 0.0
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on training set:')
+                    acc_rate = self.accuracy(traindata)
+
+                if it_total % n_samples == 0:  # print every 2500 mini-batches
+                    print('Accuracy on testing set:')
+                    acc_rate = self.accuracy(testdata)
+
+                it_total += 1
+
+            # if epoch==0:
+            #    x_out = x_bar
+            # else:
+            #    x_out = (1-1/(epoch+1))*x_out + 1/(epoch+1)*x_bar
+
+            # print statistics
+        return running_loss
+#net = Net()
+#net = net.cuda()
+model = SVGR().to(device)
+#svgr = svgr.cuda()
+
+
+criterion = nn.CrossEntropyLoss().to(device)
+#criterion = nn.SoftMarginLoss().to(device)
+#criterion = nn.NLLLoss().to(device)
+
+
+n_epoch = 5
+
+shrinkage = 1
+start = time.time()
+n_samples = len(trainloader)
+learning_rate = 0.1
+#learning_rate = 0.009
+
+print(n_samples)
+#total_loss_epoch = model.svrg_backward(trainloader,testloader, criterion, n_epoch,n_samples, learning_rate,shrinkage)
+total_loss_epoch = model.sgd_backward(trainloader,testloader, criterion, n_epoch,n_samples, learning_rate,shrinkage)
+#total_loss_epoch = model.rsag_backward(trainloader,testloader, criterion, n_epoch,n_samples, learning_rate,shrinkage)
+#total_loss_epoch = model.vrsgd_backward(trainloader,testloader, criterion, n_epoch,n_samples, learning_rate,shrinkage)
+# total_loss_epoch = model.katyusha_backward(trainloader,testloader, criterion, n_epoch,n_samples, learning_rate,shrinkage)
+end = time.time()
+print('time is : ', end - start)
+print('Finished Training')
